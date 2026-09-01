@@ -12,14 +12,7 @@ import type {
   SessionBlock,
 } from './parseSession'
 
-const categories = [
-  'Helpful',
-  'Not helpful',
-  'Other',
-] as const
-const legacyCategories = ['Incorrect', 'Confusing', 'Interesting strategy']
-
-type Category = (typeof categories)[number]
+const defaultCategory = 'Open coding'
 
 type ExportedEvent = {
   blockId: string
@@ -32,8 +25,6 @@ type ExportedEvent = {
 type AnnotationContext = {
   annotatedEvent: ExportedEvent
   copilotGeneratedText: string | null
-  userBefore: ExportedEvent | null
-  userAfter: ExportedEvent | null
 }
 
 type Annotation = {
@@ -41,7 +32,7 @@ type Annotation = {
   blockId: string
   blockTitle: string
   elapsed: string
-  category: Category
+  category: string
   comment: string
   createdAt: string
   context?: AnnotationContext
@@ -76,6 +67,31 @@ function annotationStorageKey(documentId: string) {
   return `copilot-log-annotations:${documentId}`
 }
 
+function categoryStorageKey(documentId: string) {
+  return `copilot-log-categories:${documentId}`
+}
+
+function filenameSafe(value: string) {
+  return Array.from(value.trim(), (character) =>
+    character.charCodeAt(0) < 32 ? '_' : character,
+  )
+    .join('')
+    .replace(/[<>:"/\\|?*]/g, '_')
+}
+
+function localDate(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function formatDuration(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`
+}
+
 function toExportedEvent(block: SessionBlock): ExportedEvent {
   return {
     blockId: block.id,
@@ -94,19 +110,11 @@ function getAnnotationContext(
   if (annotatedIndex === -1) return null
 
   const annotatedBlock = blocks[annotatedIndex]
-  const userBefore = blocks
-    .slice(0, annotatedIndex)
-    .findLast((block) => block.kind === 'user')
-  const userAfter = blocks
-    .slice(annotatedIndex + 1)
-    .find((block) => block.kind === 'user')
 
   return {
     annotatedEvent: toExportedEvent(annotatedBlock),
     copilotGeneratedText:
       annotatedBlock.kind === 'copilot' ? annotatedBlock.markdown : null,
-    userBefore: userBefore ? toExportedEvent(userBefore) : null,
-    userAfter: userAfter ? toExportedEvent(userAfter) : null,
   }
 }
 
@@ -126,18 +134,15 @@ function normalizeAnnotation(value: unknown): Annotation | null {
     return null
   }
 
-  const category = categories.find((item) => item === candidate.category)
-  const migratedCategory =
-    category ??
-    (legacyCategories.includes(candidate.category) ? 'Other' : undefined)
-  if (!migratedCategory) return null
+  const category = candidate.category.trim()
+  if (!category) return null
 
   return {
     id: candidate.id,
     blockId: candidate.blockId,
     blockTitle: candidate.blockTitle,
     elapsed: candidate.elapsed,
-    category: migratedCategory,
+    category,
     comment: candidate.comment,
     createdAt: candidate.createdAt,
   }
@@ -160,6 +165,22 @@ function loadAnnotations(documentId: string): Annotation[] {
   )
 }
 
+function loadCategories(documentId: string, annotations: Annotation[]) {
+  const saved = localStorage.getItem(categoryStorageKey(documentId))
+  const parsed: unknown = saved ? JSON.parse(saved) : []
+  if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) {
+    throw new Error('Saved category data has an invalid format.')
+  }
+
+  return Array.from(
+    new Set([
+      defaultCategory,
+      ...parsed.map((item) => item.trim()).filter(Boolean),
+      ...annotations.map((annotation) => annotation.category),
+    ]),
+  )
+}
+
 function Markdown({ children }: { children: string }) {
   return (
     <ReactMarkdown
@@ -177,9 +198,13 @@ function App() {
     useState<LoadedDocument | null>(null)
   const [annotations, setAnnotations] = useState<Annotation[]>([])
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null)
-  const [category, setCategory] = useState<Category>('Helpful')
+  const [categories, setCategories] = useState([defaultCategory])
+  const [selectedCategory, setSelectedCategory] = useState(defaultCategory)
+  const [newCategory, setNewCategory] = useState('')
   const [comment, setComment] = useState('')
+  const [annotatorName, setAnnotatorName] = useState('')
   const [filter, setFilter] = useState<BlockKind | 'all'>('all')
+  const [conversationOnly, setConversationOnly] = useState(false)
   const [search, setSearch] = useState('')
   const [isDragging, setIsDragging] = useState(false)
   const [error, setError] = useState('')
@@ -204,12 +229,15 @@ function App() {
 
     return loadedDocument.session.blocks.filter(
       (block) =>
+        (!conversationOnly ||
+          block.kind === 'user' ||
+          block.kind === 'copilot') &&
         (filter === 'all' || block.kind === filter) &&
         (!query ||
           block.title.toLowerCase().includes(query) ||
           block.markdown.toLowerCase().includes(query)),
     )
-  }, [loadedDocument, filter, search])
+  }, [loadedDocument, filter, conversationOnly, search])
 
   async function importFile(file: File) {
     setError('')
@@ -224,6 +252,7 @@ function App() {
       const id = await fingerprint(source)
       const session = parseSession(source)
       const savedAnnotations = loadAnnotations(id)
+      const savedCategories = loadCategories(id, savedAnnotations)
 
       setLoadedDocument({
         id,
@@ -232,8 +261,12 @@ function App() {
         session,
       })
       setAnnotations(savedAnnotations)
+      setCategories(savedCategories)
+      setSelectedCategory(savedCategories[0])
+      setNewCategory('')
       setSelectedBlockId(session.blocks[0]?.id ?? null)
       setFilter('all')
+      setConversationOnly(false)
       setSearch('')
     } catch (caught) {
       const message =
@@ -255,6 +288,30 @@ function App() {
     setError('')
   }
 
+  function addCategory() {
+    if (!loadedDocument) return
+    const category = newCategory.trim()
+    if (!category) return
+
+    const existingCategory = categories.find(
+      (item) => item.toLowerCase() === category.toLowerCase(),
+    )
+    if (existingCategory) {
+      setSelectedCategory(existingCategory)
+      setNewCategory('')
+      return
+    }
+
+    const nextCategories = [...categories, category]
+    localStorage.setItem(
+      categoryStorageKey(loadedDocument.id),
+      JSON.stringify(nextCategories),
+    )
+    setCategories(nextCategories)
+    setSelectedCategory(category)
+    setNewCategory('')
+  }
+
   function saveAnnotation() {
     if (!loadedDocument || !selectedBlock) return
     if (!comment.trim()) {
@@ -269,7 +326,7 @@ function App() {
         blockId: selectedBlock.id,
         blockTitle: selectedBlock.title,
         elapsed: selectedBlock.elapsed,
-        category,
+        category: selectedCategory,
         comment: comment.trim(),
         createdAt: new Date().toISOString(),
         context:
@@ -301,8 +358,9 @@ function App() {
   }
 
   function exportAnnotations() {
-    if (!loadedDocument) return
+    if (!loadedDocument || !annotatorName.trim()) return
 
+    const exportedAt = new Date()
     const exportedAnnotations = annotations.map((annotation) => ({
       ...annotation,
       context:
@@ -321,7 +379,9 @@ function App() {
         sessionId: loadedDocument.session.sessionId,
         title: loadedDocument.session.title,
       },
-      exportedAt: new Date().toISOString(),
+      annotator: annotatorName.trim(),
+      exportedAt: exportedAt.toISOString(),
+      categories,
       annotations: exportedAnnotations,
     }
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -330,7 +390,8 @@ function App() {
     const url = URL.createObjectURL(blob)
     const link = window.document.createElement('a')
     link.href = url
-    link.download = `${loadedDocument.filename.replace(/\.md$/i, '')}-annotations.json`
+    const sourceName = loadedDocument.filename.replace(/\.md$/i, '')
+    link.download = `${filenameSafe(sourceName)}-${filenameSafe(annotatorName)}-${localDate(exportedAt)}.json`
     link.click()
     URL.revokeObjectURL(url)
   }
@@ -339,6 +400,9 @@ function App() {
     setLoadedDocument(null)
     setAnnotations([])
     setSelectedBlockId(null)
+    setCategories([defaultCategory])
+    setSelectedCategory(defaultCategory)
+    setNewCategory('')
     setError('')
   }
 
@@ -387,6 +451,17 @@ function App() {
     )
   }
 
+  const stageSummary = loadedDocument.session.stageSummary
+  const stageTotals = stageSummary.reduce(
+    (totals, stage) => ({
+      durationSeconds: totals.durationSeconds + stage.durationSeconds,
+      turns: totals.turns + stage.turns,
+      userTurns: totals.userTurns + stage.userTurns,
+      copilotTurns: totals.copilotTurns + stage.copilotTurns,
+    }),
+    { durationSeconds: 0, turns: 0, userTurns: 0, copilotTurns: 0 },
+  )
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -400,6 +475,15 @@ function App() {
           </div>
         </div>
         <div className="topbar-actions">
+          <label className="annotator-field">
+            <span>Annotator</span>
+            <input
+              type="text"
+              value={annotatorName}
+              placeholder="Enter name"
+              onChange={(event) => setAnnotatorName(event.target.value)}
+            />
+          </label>
           <span className="save-status">
             <span className="status-dot" />
             Saved locally
@@ -411,7 +495,16 @@ function App() {
           >
             Open another
           </button>
-          <button type="button" onClick={exportAnnotations}>
+          <button
+            type="button"
+            onClick={exportAnnotations}
+            disabled={!annotatorName.trim()}
+            title={
+              annotatorName.trim()
+                ? 'Export annotations'
+                : 'Enter an annotator name before exporting'
+            }
+          >
             Export annotations
           </button>
         </div>
@@ -434,6 +527,28 @@ function App() {
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
+          <label className="conversation-toggle">
+            <input
+              type="checkbox"
+              checked={conversationOnly}
+              onChange={(event) => {
+                const checked = event.target.checked
+                setConversationOnly(checked)
+                if (
+                  checked &&
+                  filter !== 'all' &&
+                  filter !== 'user' &&
+                  filter !== 'copilot'
+                ) {
+                  setFilter('all')
+                }
+              }}
+            />
+            <span>
+              <strong>Conversation only</strong>
+              <small>Show User and Copilot turns</small>
+            </span>
+          </label>
           <div className="filter-list" aria-label="Filter events">
             {(
               ['all', 'user', 'copilot', 'tool', 'reasoning', 'info'] as const
@@ -480,6 +595,50 @@ function App() {
           <div className="document-meta">
             <Markdown>{loadedDocument.session.metadataMarkdown}</Markdown>
           </div>
+          {stageSummary.length > 0 && (
+            <section className="stage-summary" aria-labelledby="summary-title">
+              <div className="stage-summary-heading">
+                <div>
+                  <p className="eyebrow">Session overview</p>
+                  <h2 id="summary-title">Stage summary</h2>
+                </div>
+                <span>{stageTotals.turns} conversation turns</span>
+              </div>
+              <div className="stage-summary-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Stage</th>
+                      <th scope="col">Duration</th>
+                      <th scope="col">Turns</th>
+                      <th scope="col">User</th>
+                      <th scope="col">Copilot</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stageSummary.map((stage) => (
+                      <tr key={stage.stage}>
+                        <th scope="row">{stage.stage}</th>
+                        <td>{formatDuration(stage.durationSeconds)}</td>
+                        <td>{stage.turns}</td>
+                        <td>{stage.userTurns}</td>
+                        <td>{stage.copilotTurns}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <th scope="row">Total</th>
+                      <td>{formatDuration(stageTotals.durationSeconds)}</td>
+                      <td>{stageTotals.turns}</td>
+                      <td>{stageTotals.userTurns}</td>
+                      <td>{stageTotals.copilotTurns}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </section>
+          )}
           <div className="event-list">
             {visibleBlocks.map((block) => (
               <article
@@ -531,33 +690,45 @@ function App() {
 
           {selectedBlock ? (
             <>
-              <fieldset>
-                <legend>How would you label this?</legend>
-                <div className="category-grid">
-                  {categories.map((item) => (
-                    <label
-                      key={item}
-                      className={category === item ? 'selected' : ''}
-                    >
-                      <input
-                        type="radio"
-                        name="category"
-                        value={item}
-                        checked={category === item}
-                        onChange={() => setCategory(item)}
-                      />
-                      {item}
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
+              <label className="category-label" htmlFor="annotation-category">
+                Category
+              </label>
+              <select
+                id="annotation-category"
+                value={selectedCategory}
+                onChange={(event) => setSelectedCategory(event.target.value)}
+              >
+                {categories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+              <form
+                className="category-creator"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  addCategory()
+                }}
+              >
+                <input
+                  type="text"
+                  value={newCategory}
+                  placeholder="New category"
+                  aria-label="New category"
+                  onChange={(event) => setNewCategory(event.target.value)}
+                />
+                <button type="submit" disabled={!newCategory.trim()}>
+                  Add
+                </button>
+              </form>
               <label className="comment-label" htmlFor="annotation-comment">
-                Add details
+                Coding note
               </label>
               <textarea
                 id="annotation-comment"
                 rows={6}
-                placeholder="Describe what was useful, confusing, or worth revisiting..."
+                placeholder="Enter a coding note..."
                 value={comment}
                 onChange={(event) => setComment(event.target.value)}
               />

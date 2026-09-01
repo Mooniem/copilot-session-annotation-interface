@@ -8,12 +8,23 @@ export type SessionBlock = {
   markdown: string
 }
 
+export type StageSummary = {
+  stage: string
+  durationSeconds: number
+  turns: number
+  userTurns: number
+  copilotTurns: number
+}
+
 export type ParsedSession = {
   title: string
   sessionId?: string
   metadataMarkdown: string
   blocks: SessionBlock[]
+  stageSummary: StageSummary[]
 }
+
+const activeStagePattern = /🔵\s*([^·\r\n]+)/
 
 function classifyBlock(title: string): BlockKind {
   const normalized = title.toLowerCase()
@@ -23,6 +34,50 @@ function classifyBlock(title: string): BlockKind {
   if (normalized === 'reasoning') return 'reasoning'
   if (normalized === 'info') return 'info'
   return 'tool'
+}
+
+function elapsedSeconds(elapsed: string) {
+  const match = elapsed.match(/^(?:(\d+)m\s*)?(\d+)s$/)
+  if (!match) return 0
+  return Number(match[1] ?? 0) * 60 + Number(match[2])
+}
+
+function summarizeStages(blocks: SessionBlock[]): StageSummary[] {
+  const turns = blocks.filter(
+    (block) => block.kind === 'user' || block.kind === 'copilot',
+  )
+  const detectedStages = turns.map(
+    (turn) => turn.markdown.match(activeStagePattern)?.[1].trim() ?? '',
+  )
+  const firstStage = detectedStages.find(Boolean)
+  if (!firstStage) return []
+
+  const summaries = new Map<string, StageSummary>()
+  let currentStage = firstStage
+
+  turns.forEach((turn, index) => {
+    currentStage = detectedStages[index] || currentStage
+    const summary = summaries.get(currentStage) ?? {
+      stage: currentStage,
+      durationSeconds: 0,
+      turns: 0,
+      userTurns: 0,
+      copilotTurns: 0,
+    }
+    const nextTurn = turns[index + 1]
+    if (nextTurn) {
+      summary.durationSeconds += Math.max(
+        0,
+        elapsedSeconds(nextTurn.elapsed) - elapsedSeconds(turn.elapsed),
+      )
+    }
+    summary.turns += 1
+    if (turn.kind === 'user') summary.userTurns += 1
+    if (turn.kind === 'copilot') summary.copilotTurns += 1
+    summaries.set(currentStage, summary)
+  })
+
+  return Array.from(summaries.values())
 }
 
 export function parseSession(source: string): ParsedSession {
@@ -64,5 +119,11 @@ export function parseSession(source: string): ParsedSession {
     })
   }
 
-  return { title, sessionId, metadataMarkdown, blocks }
+  return {
+    title,
+    sessionId,
+    metadataMarkdown,
+    blocks,
+    stageSummary: summarizeStages(blocks),
+  }
 }
