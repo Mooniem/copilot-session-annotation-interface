@@ -18,7 +18,7 @@ the app and deploys only the generated static `dist` directory to GitHub Pages.
 In the GitHub repository, open **Settings > Pages** and set **Source** to
 **GitHub Actions**. After the deployment succeeds, the app is available at:
 
-<https://mooniem.github.io/thought-partner-annotation-interface/>
+<https://mooniem.github.io/copilot-session-annotation-interface/>
 
 ## Development
 
