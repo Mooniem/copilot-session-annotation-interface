@@ -38,9 +38,76 @@ button:disabled {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
-textarea:focus-visible {
+textarea:focus-visible,
+dialog:focus-visible {
   outline: 3px solid rgba(56, 99, 74, 0.25);
   outline-offset: 2px;
+}
+
+.instructions-dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 30px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--paper);
+  box-shadow: 0 24px 80px rgba(32, 34, 31, 0.24);
+}
+
+.instructions-dialog::backdrop {
+  background: rgba(32, 34, 31, 0.58);
+  backdrop-filter: blur(3px);
+}
+
+.instructions-dialog h2 {
+  margin-bottom: 8px;
+  font: 700 28px/1.2 Georgia, serif;
+}
+
+.instructions-dialog > p:not(.eyebrow) {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.instructions-dialog ol {
+  margin: 20px 0;
+  padding-left: 24px;
+  color: #30332e;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.instructions-dialog li + li {
+  margin-top: 8px;
+}
+
+.instructions-dialog .privacy-note {
+  padding: 12px 14px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+}
+
+.instructions-dialog > button {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.help-button {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--accent);
+  background: white;
+  font-size: 15px;
+  font-weight: 800;
 }
 
 .welcome {
@@ -56,11 +123,18 @@ textarea:focus-visible {
 .welcome-card {
   width: min(660px, 100%);
   padding: 56px;
+  position: relative;
   border: 1px solid var(--line);
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.94);
   box-shadow: 0 24px 80px rgba(45, 54, 44, 0.11);
   text-align: center;
+}
+
+.welcome-help {
+  position: absolute;
+  top: 18px;
+  right: 18px;
 }
 
 .brand-mark {
@@ -227,7 +301,8 @@ textarea:focus-visible {
   background: #4b9867;
 }
 
-.secondary-button {
+.secondary-button,
+.export-csv-button {
   color: var(--ink);
   border: 1px solid var(--line);
   background: white;
@@ -770,6 +845,28 @@ textarea:focus-visible {
   text-align: center;
 }
 
+.selection-reminder {
+  margin-top: 20px;
+  padding: 18px;
+  border: 1px solid #bfcfc2;
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
+.selection-reminder strong {
+  display: block;
+  color: var(--accent);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.selection-reminder p {
+  margin: 7px 0 0;
+  color: #536157;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 @media (max-width: 1050px) {
   .annotator-field span,
   .save-status {
@@ -820,6 +917,16 @@ textarea:focus-visible {
 }
 
 @media (max-width: 560px) {
+  .instructions-dialog {
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
+    padding: 24px 20px;
+  }
+
+  .instructions-dialog h2 {
+    font-size: 24px;
+  }
+
   .welcome {
     padding: 14px;
   }

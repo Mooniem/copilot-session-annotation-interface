@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
-import type { DragEvent } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { DragEvent, MouseEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize from 'rehype-sanitize'
@@ -13,6 +13,7 @@ import type {
 } from './parseSession'
 
 const defaultCategory = 'Open coding'
+const onboardingStorageKey = 'copilot-log-annotator:onboarding-complete'
 
 type ExportedEvent = {
   blockId: string
@@ -90,6 +91,20 @@ function formatDuration(totalSeconds: number) {
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
   return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`
+}
+
+function csvValue(value: string) {
+  return `"${value.replaceAll('"', '""')}"`
+}
+
+function downloadFile(content: string, type: string, filename: string) {
+  const blob = new Blob([content], { type })
+  const url = URL.createObjectURL(blob)
+  const link = window.document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 function toExportedEvent(block: SessionBlock): ExportedEvent {
@@ -192,8 +207,68 @@ function Markdown({ children }: { children: string }) {
   )
 }
 
+function InstructionsDialog({
+  open,
+  onClose,
+}: {
+  open: boolean
+  onClose: () => void
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null)
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+
+    if (open && !dialog.open) dialog.showModal()
+    if (!open && dialog.open) dialog.close()
+  }, [open])
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="instructions-dialog"
+      aria-labelledby="instructions-title"
+      aria-describedby="instructions-description"
+      onCancel={(event) => {
+        event.preventDefault()
+        onClose()
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return
+        event.preventDefault()
+        onClose()
+      }}
+    >
+      <p className="eyebrow">Quick start</p>
+      <h2 id="instructions-title">Annotate a Copilot session</h2>
+      <p id="instructions-description">
+        Follow these steps to code a transcript and export your annotations.
+      </p>
+      <ol>
+        <li>Enter your name as the annotator.</li>
+        <li>Import a Copilot session Markdown file.</li>
+        <li>Select a transcript block before adding an annotation.</li>
+        <li>Create or select a category and enter a coding note.</li>
+        <li>Save each annotation, then export your work as JSON or CSV.</li>
+      </ol>
+      <p className="privacy-note">
+        Your imported file and annotations stay in this browser. They are not
+        uploaded to a server.
+      </p>
+      <button type="button" autoFocus onClick={onClose}>
+        Start annotating
+      </button>
+    </dialog>
+  )
+}
+
 function App() {
   const inputRef = useRef<HTMLInputElement>(null)
+  const instructionOpenerRef = useRef<HTMLButtonElement | null>(null)
+  const [instructionsOpen, setInstructionsOpen] = useState(
+    () => localStorage.getItem(onboardingStorageKey) !== 'true',
+  )
   const [loadedDocument, setLoadedDocument] =
     useState<LoadedDocument | null>(null)
   const [annotations, setAnnotations] = useState<Annotation[]>([])
@@ -264,7 +339,7 @@ function App() {
       setCategories(savedCategories)
       setSelectedCategory(savedCategories[0])
       setNewCategory('')
-      setSelectedBlockId(session.blocks[0]?.id ?? null)
+      setSelectedBlockId(null)
       setFilter('all')
       setConversationOnly(false)
       setSearch('')
@@ -286,6 +361,17 @@ function App() {
     setSelectedBlockId(block.id)
     setComment('')
     setError('')
+  }
+
+  function openInstructions(event: MouseEvent<HTMLButtonElement>) {
+    instructionOpenerRef.current = event.currentTarget
+    setInstructionsOpen(true)
+  }
+
+  function closeInstructions() {
+    localStorage.setItem(onboardingStorageKey, 'true')
+    setInstructionsOpen(false)
+    requestAnimationFrame(() => instructionOpenerRef.current?.focus())
   }
 
   function addCategory() {
@@ -313,7 +399,11 @@ function App() {
   }
 
   function saveAnnotation() {
-    if (!loadedDocument || !selectedBlock) return
+    if (!loadedDocument) return
+    if (!selectedBlock) {
+      setError('Select a block before saving an annotation.')
+      return
+    }
     if (!comment.trim()) {
       setError('Add a comment before saving the annotation.')
       return
@@ -357,7 +447,7 @@ function App() {
     setAnnotations(next)
   }
 
-  function exportAnnotations() {
+  function exportAnnotationsJson() {
     if (!loadedDocument || !annotatorName.trim()) return
 
     const exportedAt = new Date()
@@ -384,16 +474,55 @@ function App() {
       categories,
       annotations: exportedAnnotations,
     }
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: 'application/json',
-    })
-    const url = URL.createObjectURL(blob)
-    const link = window.document.createElement('a')
-    link.href = url
     const sourceName = loadedDocument.filename.replace(/\.md$/i, '')
-    link.download = `${filenameSafe(sourceName)}-${filenameSafe(annotatorName)}-${localDate(exportedAt)}.json`
-    link.click()
-    URL.revokeObjectURL(url)
+    const filename = `${filenameSafe(sourceName)}-${filenameSafe(annotatorName)}-${localDate(exportedAt)}.json`
+    downloadFile(JSON.stringify(payload, null, 2), 'application/json', filename)
+  }
+
+  function exportAnnotationsCsv() {
+    if (!loadedDocument || !annotatorName.trim()) return
+
+    const columns = [
+      'source_file',
+      'annotator',
+      'annotation_id',
+      'block_id',
+      'block_title',
+      'block_kind',
+      'elapsed',
+      'category',
+      'coding_note',
+      'created_at',
+      'annotated_text',
+      'copilot_generated_text',
+    ]
+    const rows = annotations.map((annotation) => {
+      const context = getAnnotationContext(
+        loadedDocument.session.blocks,
+        annotation.blockId,
+      )
+      return [
+        loadedDocument.filename,
+        annotatorName.trim(),
+        annotation.id,
+        annotation.blockId,
+        annotation.blockTitle,
+        context?.annotatedEvent.kind ?? '',
+        annotation.elapsed,
+        annotation.category,
+        annotation.comment,
+        annotation.createdAt,
+        context?.annotatedEvent.markdown ?? '',
+        context?.copilotGeneratedText ?? '',
+      ]
+    })
+    const csv = [columns, ...rows]
+      .map((row) => row.map(csvValue).join(','))
+      .join('\r\n')
+    const exportedAt = new Date()
+    const sourceName = loadedDocument.filename.replace(/\.md$/i, '')
+    const filename = `${filenameSafe(sourceName)}-${filenameSafe(annotatorName)}-${localDate(exportedAt)}.csv`
+    downloadFile(`\uFEFF${csv}\r\n`, 'text/csv;charset=utf-8', filename)
   }
 
   function clearDocument() {
@@ -408,8 +537,22 @@ function App() {
 
   if (!loadedDocument) {
     return (
-      <main className="welcome">
-        <section className="welcome-card">
+      <>
+        <InstructionsDialog
+          open={instructionsOpen}
+          onClose={closeInstructions}
+        />
+        <main className="welcome">
+          <section className="welcome-card">
+            <button
+              className="help-button welcome-help"
+              type="button"
+              onClick={openInstructions}
+              aria-label="Show instructions"
+              title="Show instructions"
+            >
+              ?
+            </button>
           <div className="brand-mark" aria-hidden="true">
             ✦
           </div>
@@ -446,8 +589,9 @@ function App() {
             />
           </div>
           {error && <p className="error-message">{error}</p>}
-        </section>
-      </main>
+          </section>
+        </main>
+      </>
     )
   }
 
@@ -464,6 +608,10 @@ function App() {
 
   return (
     <div className="app-shell">
+      <InstructionsDialog
+        open={instructionsOpen}
+        onClose={closeInstructions}
+      />
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark small" aria-hidden="true">
@@ -475,6 +623,15 @@ function App() {
           </div>
         </div>
         <div className="topbar-actions">
+          <button
+            className="help-button"
+            type="button"
+            onClick={openInstructions}
+            aria-label="Show instructions"
+            title="Show instructions"
+          >
+            ?
+          </button>
           <label className="annotator-field">
             <span>Annotator</span>
             <input
@@ -496,16 +653,29 @@ function App() {
             Open another
           </button>
           <button
+            className="export-csv-button"
             type="button"
-            onClick={exportAnnotations}
+            onClick={exportAnnotationsCsv}
             disabled={!annotatorName.trim()}
             title={
               annotatorName.trim()
-                ? 'Export annotations'
+                ? 'Export annotations as CSV'
                 : 'Enter an annotator name before exporting'
             }
           >
-            Export annotations
+            Export CSV
+          </button>
+          <button
+            type="button"
+            onClick={exportAnnotationsJson}
+            disabled={!annotatorName.trim()}
+            title={
+              annotatorName.trim()
+                ? 'Export annotations as JSON'
+                : 'Enter an annotator name before exporting'
+            }
+          >
+            Export JSON
           </button>
         </div>
       </header>
@@ -771,9 +941,13 @@ function App() {
               </div>
             </>
           ) : (
-            <p className="panel-help">
-              Choose an event from the session to add a note.
-            </p>
+            <div className="selection-reminder" role="status">
+              <strong>Select a block to begin annotating</strong>
+              <p>
+                Choose a transcript block before adding a category or coding
+                note.
+              </p>
+            </div>
           )}
         </aside>
       </div>
