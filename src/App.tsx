@@ -345,6 +345,10 @@ function App() {
   const [selectedCategory, setSelectedCategory] = useState(defaultCategory)
   const [newCategory, setNewCategory] = useState('')
   const [comment, setComment] = useState('')
+  const [editingAnnotationId, setEditingAnnotationId] = useState<string | null>(null)
+  const [editCategory, setEditCategory] = useState(defaultCategory)
+  const [editComment, setEditComment] = useState('')
+  const [editError, setEditError] = useState('')
   const [annotatorName, setAnnotatorName] = useState('')
   const [filter, setFilter] = useState<BlockKind | 'all'>('all')
   const [conversationOnly, setConversationOnly] = useState(false)
@@ -412,6 +416,8 @@ function App() {
       setSelectedCategory(savedCategories[0])
       setNewCategory('')
       setSelectedBlockId(null)
+      setEditingAnnotationId(null)
+      setEditError('')
       setFilter('all')
       setConversationOnly(false)
       setSearch('')
@@ -433,6 +439,8 @@ function App() {
     setSelectedBlockId(block.id)
     setComment('')
     setError('')
+    setEditingAnnotationId(null)
+    setEditError('')
   }
 
   function openInstructions(event: MouseEvent<HTMLButtonElement>) {
@@ -517,6 +525,54 @@ function App() {
       JSON.stringify(next),
     )
     setAnnotations(next)
+    if (editingAnnotationId === annotationId) {
+      setEditingAnnotationId(null)
+      setEditError('')
+    }
+  }
+
+  function startEditingAnnotation(annotation: Annotation) {
+    setEditingAnnotationId(annotation.id)
+    setEditCategory(annotation.category)
+    setEditComment(annotation.comment)
+    setEditError('')
+    requestAnimationFrame(() => {
+      window.document.getElementById(`edit-note-${annotation.id}`)?.focus()
+    })
+  }
+
+  function updateAnnotation(annotationId: string) {
+    if (!loadedDocument) return
+    if (!editComment.trim()) {
+      setEditError('Add a coding note before saving changes.')
+      return
+    }
+    const next = annotations.map((annotation) =>
+      annotation.id === annotationId
+        ? {
+            ...annotation,
+            category: editCategory,
+            comment: editComment.trim(),
+          }
+        : annotation,
+    )
+    localStorage.setItem(
+      annotationStorageKey(loadedDocument.id),
+      JSON.stringify(next),
+    )
+    setAnnotations(next)
+    setEditingAnnotationId(null)
+    setEditError('')
+  }
+
+  function openRubricCriterion(criterionId: string) {
+    setAnnotationGoal('skill-validation')
+    setRubricError('')
+    requestAnimationFrame(() => {
+      const criterion = window.document.getElementById(`criterion-${criterionId}`)
+      criterion?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      criterion?.focus({ preventScroll: true })
+    })
   }
 
   async function importRubric(file: File) {
@@ -784,6 +840,8 @@ function App() {
     setLoadedRubric(null)
     setRubricResponses([])
     setRubricError('')
+    setEditingAnnotationId(null)
+    setEditError('')
     setSelectedBlockId(null)
     setCategories([defaultCategory])
     setSelectedCategory(defaultCategory)
@@ -1108,41 +1166,165 @@ function App() {
             </section>
           )}
           <div className="event-list">
-            {visibleBlocks.map((block) => (
-              <article
-                id={block.id}
-                key={block.id}
-                className={`event-card ${block.kind} ${
-                  selectedBlockId === block.id ? 'selected' : ''
-                }`}
-                aria-current={
-                  selectedBlockId === block.id ? 'true' : undefined
-                }
-                onClick={() => selectBlock(block)}
-              >
-                <header>
-                  <div>
-                    <span className={`kind-dot ${block.kind}`} />
-                    <strong>{block.title}</strong>
+            {visibleBlocks.map((block) => {
+              const isSelected = selectedBlockId === block.id
+              const blockAnnotations = annotations.filter(
+                (annotation) => annotation.blockId === block.id,
+              )
+              const rubricReferences = loadedRubric?.definition.criteria.flatMap(
+                (criterion) => {
+                  const response = rubricResponses.find(
+                    (item) => item.criterionId === criterion.id,
+                  )
+                  if (!response?.evidenceBlockIds.includes(block.id)) return []
+                  const selectedOption = criterion.options.find(
+                    (option) => option.value === response.selectedOptionValue,
+                  )
+                  return [{ criterion, response, selectedOption }]
+                },
+              ) ?? []
+              const totalReferences = blockAnnotations.length + rubricReferences.length
+
+              return (
+                <article
+                  id={block.id}
+                  key={block.id}
+                  className={`event-card ${block.kind} ${isSelected ? 'selected' : ''}`}
+                  aria-current={isSelected ? 'true' : undefined}
+                  onClick={() => selectBlock(block)}
+                >
+                  <header>
+                    <div>
+                      <span className={`kind-dot ${block.kind}`} />
+                      <strong>{block.title}</strong>
+                    </div>
+                    <div className="event-status">
+                      {isSelected && <span className="selected-badge">Selected</span>}
+                      <span>{block.elapsed}</span>
+                    </div>
+                  </header>
+                  <div className="markdown-body">
+                    <Markdown>{block.markdown}</Markdown>
                   </div>
-                  <div className="event-status">
-                    {selectedBlockId === block.id && (
-                      <span className="selected-badge">Selected</span>
-                    )}
-                    <span>{block.elapsed}</span>
-                  </div>
-                </header>
-                <div className="markdown-body">
-                  <Markdown>{block.markdown}</Markdown>
-                </div>
-                {!!annotationCounts[block.id] && (
-                  <div className="annotation-indicator">
-                    {annotationCounts[block.id]} annotation
-                    {annotationCounts[block.id] === 1 ? '' : 's'}
-                  </div>
-                )}
-              </article>
-            ))}
+                  {!isSelected && totalReferences > 0 && (
+                    <div className="annotation-indicator">
+                      {totalReferences} annotation{totalReferences === 1 ? '' : 's'}
+                    </div>
+                  )}
+                  {isSelected && (
+                    <div
+                      className="block-annotation-review"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <div className="block-review-heading">
+                        <strong>Annotations on this block</strong>
+                        <span>{totalReferences}</span>
+                      </div>
+                      {totalReferences === 0 && (
+                        <p className="block-review-empty">No annotations on this block yet.</p>
+                      )}
+                      {blockAnnotations.length > 0 && (
+                        <section className="block-review-section">
+                          <h3>Conversation Flow notes</h3>
+                          {blockAnnotations.map((annotation) => (
+                            <div className="block-review-note" key={annotation.id}>
+                              {editingAnnotationId === annotation.id ? (
+                                <form
+                                  className="block-note-editor"
+                                  onSubmit={(event) => {
+                                    event.preventDefault()
+                                    updateAnnotation(annotation.id)
+                                  }}
+                                >
+                                  <label htmlFor={`edit-category-${annotation.id}`}>Category</label>
+                                  <select
+                                    id={`edit-category-${annotation.id}`}
+                                    value={editCategory}
+                                    onChange={(event) => setEditCategory(event.target.value)}
+                                  >
+                                    {categories.map((category) => (
+                                      <option key={category} value={category}>{category}</option>
+                                    ))}
+                                  </select>
+                                  <label htmlFor={`edit-note-${annotation.id}`}>Coding note</label>
+                                  <textarea
+                                    id={`edit-note-${annotation.id}`}
+                                    rows={4}
+                                    value={editComment}
+                                    onChange={(event) => {
+                                      setEditComment(event.target.value)
+                                      setEditError('')
+                                    }}
+                                  />
+                                  {editError && <p className="error-message compact">{editError}</p>}
+                                  <div className="block-note-actions">
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      onClick={() => {
+                                        setEditingAnnotationId(null)
+                                        setEditError('')
+                                      }}
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button type="submit">Save changes</button>
+                                  </div>
+                                </form>
+                              ) : (
+                                <>
+                                  <div className="block-note-heading">
+                                    <span className="category-badge">{annotation.category}</span>
+                                    <div>
+                                      <button
+                                        type="button"
+                                        className="text-button"
+                                        onClick={() => startEditingAnnotation(annotation)}
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="delete-button"
+                                        onClick={() => deleteAnnotation(annotation.id)}
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <p>{annotation.comment}</p>
+                                </>
+                              )}
+                            </div>
+                          ))}
+                        </section>
+                      )}
+                      {rubricReferences.length > 0 && (
+                        <section className="block-review-section rubric-references">
+                          <h3>Skill Validation evidence</h3>
+                          {rubricReferences.map(({ criterion, response, selectedOption }) => (
+                            <div className="rubric-reference" key={criterion.id}>
+                              <div>
+                                <strong>{criterion.prompt}</strong>
+                                <span>{selectedOption?.label ?? 'Unanswered'}</span>
+                              </div>
+                              {response.note && <p>{response.note}</p>}
+                              <button
+                                type="button"
+                                className="text-button"
+                                onClick={() => openRubricCriterion(criterion.id)}
+                              >
+                                Open criterion
+                              </button>
+                            </div>
+                          ))}
+                        </section>
+                      )}
+                    </div>
+                  )}
+                </article>
+              )
+            })}
             {visibleBlocks.length === 0 && (
               <div className="empty-state">No events match this filter.</div>
             )}

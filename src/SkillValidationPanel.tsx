@@ -229,6 +229,7 @@ export function SkillValidationPanel({
                   className={`criterion ${response?.selectedOptionValue ? 'answered' : ''}`}
                   id={`criterion-${criterion.id}`}
                   key={criterion.id}
+                  tabIndex={-1}
                 >
                   <div className="criterion-heading">
                     <span>{index + 1}</span>

@@ -825,6 +825,160 @@ dialog:focus-visible {
   font-weight: 700;
 }
 
+.block-annotation-review {
+  border-top: 1px solid #c5d9ca;
+  background: #f5faf6;
+  cursor: default;
+}
+
+.block-review-heading {
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.block-review-heading > span {
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: white;
+  text-align: center;
+}
+
+.block-review-empty {
+  margin: 0;
+  padding: 0 16px 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.block-review-section {
+  padding: 14px 16px 16px;
+  border-top: 1px solid #dce8de;
+}
+
+.block-review-section > h3 {
+  margin-bottom: 10px;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.block-review-note,
+.rubric-reference {
+  padding: 11px 12px;
+  border-left: 3px solid var(--accent);
+  background: white;
+}
+
+.block-review-note + .block-review-note,
+.rubric-reference + .rubric-reference {
+  margin-top: 8px;
+}
+
+.block-note-heading,
+.rubric-reference > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.block-note-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.block-review-note > p,
+.rubric-reference > p {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+  color: #30332e;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.block-note-editor {
+  display: grid;
+  gap: 7px;
+}
+
+.block-note-editor label {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.block-note-editor select,
+.block-note-editor textarea {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  background: white;
+  font-size: 12px;
+}
+
+.block-note-editor textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.block-note-actions {
+  margin-top: 3px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.block-note-actions button {
+  padding: 7px 10px;
+  font-size: 11px;
+}
+
+.rubric-references {
+  background: #f8f7fb;
+}
+
+.rubric-reference {
+  border-left-color: #816292;
+}
+
+.rubric-reference > div:first-child {
+  align-items: flex-start;
+}
+
+.rubric-reference strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.rubric-reference span {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #654a73;
+  background: #eee7f2;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.rubric-reference > button {
+  margin-top: 9px;
+}
+
+.criterion:focus-visible {
+  outline: 3px solid rgba(56, 99, 74, 0.25);
+  outline-offset: -3px;
+}
+
 .annotation-heading {
   padding-bottom: 18px;
   border-bottom: 1px solid var(--line);
@@ -1415,6 +1569,12 @@ dialog:focus-visible {
   .evidence-dialog {
     width: calc(100vw - 16px);
     height: calc(100vh - 16px);
+  }
+
+  .block-note-heading,
+  .rubric-reference > div:first-child {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .evidence-controls {
