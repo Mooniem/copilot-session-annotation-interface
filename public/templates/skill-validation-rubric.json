@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "skill-validation-v1",
+  "title": "Skill Validation Check",
+  "description": "Evaluate whether the assistant applied the target skill throughout the session.",
+  "criteria": [
+    {
+      "id": "skill-invocation",
+      "prompt": "Did the assistant invoke and follow the appropriate skill?",
+      "description": "Consider both explicit skill use and adherence to its required workflow.",
+      "options": [
+        { "value": "yes", "label": "Yes" },
+        { "value": "partial", "label": "Partially" },
+        { "value": "no", "label": "No" },
+        { "value": "not-applicable", "label": "Not applicable" }
+      ]
+    },
+    {
+      "id": "grounded-outcome",
+      "prompt": "Was the final outcome grounded in evidence from the session?",
+      "options": [
+        { "value": "yes", "label": "Yes" },
+        { "value": "partial", "label": "Partially" },
+        { "value": "no", "label": "No" }
+      ]
+    }
+  ]
+}

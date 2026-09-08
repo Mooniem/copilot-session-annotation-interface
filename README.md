@@ -1,7 +1,12 @@
 # Copilot Session Annotator
 
-A browser-based interface for importing Copilot session Markdown, coding events,
-and exporting annotations as JSON.
+A browser-based interface for importing Copilot session Markdown and completing
+two independent annotation goals:
+
+- **Skill Validation Check** evaluates the whole session against an imported rubric.
+- **Conversation Flow** attaches categorized coding notes to transcript blocks.
+
+Each goal exports to its own JSON or CSV file.
 
 ## Data privacy
 
@@ -9,6 +14,45 @@ The deployed application is static and has no backend. Imported session files ar
 read in the user's browser and are not uploaded to GitHub or another server.
 Annotations and custom categories are stored in that browser's local storage until
 the user exports or clears them.
+
+## Skill validation rubrics
+
+Rubrics can be imported as JSON or CSV. JSON is the canonical format and is
+recommended for source control. CSV is useful for spreadsheet authoring. Download
+the [JSON template](public/templates/skill-validation-rubric.json) or the
+[CSV template](public/templates/skill-validation-rubric.csv).
+
+A JSON rubric has `schemaVersion`, `id`, `title`, an optional `description`, and
+an ordered `criteria` array. Every criterion needs a unique `id`, a `prompt`, and
+at least two options with unique `value` fields.
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "skill-validation-v1",
+  "title": "Skill Validation Check",
+  "criteria": [
+    {
+      "id": "skill-invocation",
+      "prompt": "Did the assistant follow the appropriate skill?",
+      "options": [
+        { "value": "yes", "label": "Yes" },
+        { "value": "no", "label": "No" }
+      ]
+    }
+  ]
+}
+```
+
+CSV rubrics use one row per answer option with these columns:
+
+```text
+rubric_id,rubric_title,rubric_description,criterion_id,criterion_prompt,criterion_description,option_value,option_label
+```
+
+Repeated rubric and criterion metadata must be identical on every corresponding
+row. Imported rubrics and responses are fingerprinted and stored locally per
+transcript, so switching rubrics does not overwrite prior response sets.
 
 ## GitHub Pages
 

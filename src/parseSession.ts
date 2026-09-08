@@ -47,18 +47,35 @@ function summarizeStages(blocks: SessionBlock[]): StageSummary[] {
     (block) => block.kind === 'user' || block.kind === 'copilot',
   )
   const detectedStages = turns.map(
-    (turn) => turn.markdown.match(activeStagePattern)?.[1].trim() ?? '',
+    (turn) =>
+      turn.kind === 'copilot'
+        ? turn.markdown.match(activeStagePattern)?.[1].trim() ?? ''
+        : '',
   )
-  const firstStage = detectedStages.find(Boolean)
-  if (!firstStage) return []
+  if (!detectedStages.some(Boolean)) return []
+
+  const assignedStages = Array(turns.length).fill('Unassigned')
+  const transitions = detectedStages.flatMap((stage, markerIndex) => {
+    if (!stage) return []
+
+    let startIndex = markerIndex
+    while (startIndex > 0 && turns[startIndex].kind !== 'user') {
+      startIndex -= 1
+    }
+    return [{ stage, startIndex }]
+  })
+
+  transitions.forEach(({ stage, startIndex }, transitionIndex) => {
+    const nextStartIndex = transitions[transitionIndex + 1]?.startIndex
+    assignedStages.fill(stage, startIndex, nextStartIndex)
+  })
 
   const summaries = new Map<string, StageSummary>()
-  let currentStage = firstStage
 
   turns.forEach((turn, index) => {
-    currentStage = detectedStages[index] || currentStage
-    const summary = summaries.get(currentStage) ?? {
-      stage: currentStage,
+    const stage = assignedStages[index]
+    const summary = summaries.get(stage) ?? {
+      stage,
       durationSeconds: 0,
       turns: 0,
       userTurns: 0,
@@ -74,7 +91,7 @@ function summarizeStages(blocks: SessionBlock[]): StageSummary[] {
     summary.turns += 1
     if (turn.kind === 'user') summary.userTurns += 1
     if (turn.kind === 'copilot') summary.copilotTurns += 1
-    summaries.set(currentStage, summary)
+    summaries.set(stage, summary)
   })
 
   return Array.from(summaries.values())

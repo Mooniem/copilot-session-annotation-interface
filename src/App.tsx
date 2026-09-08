@@ -5,6 +5,16 @@ import rehypeRaw from 'rehype-raw'
 import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
 import './App.css'
+import { SkillValidationPanel } from './SkillValidationPanel'
+import type {
+  AnnotationContext,
+  AnnotationGoal,
+  ConversationFlowAnnotation as Annotation,
+  ExportedEvent,
+  RubricDefinition,
+  RubricResponse,
+} from './annotationTypes'
+import { parseRubric } from './parseRubric'
 import { parseSession } from './parseSession'
 import type {
   BlockKind,
@@ -15,35 +25,17 @@ import type {
 const defaultCategory = 'Open coding'
 const onboardingStorageKey = 'copilot-log-annotator:onboarding-complete'
 
-type ExportedEvent = {
-  blockId: string
-  title: string
-  kind: BlockKind
-  elapsed: string
-  markdown: string
-}
-
-type AnnotationContext = {
-  annotatedEvent: ExportedEvent
-  copilotGeneratedText: string | null
-}
-
-type Annotation = {
-  id: string
-  blockId: string
-  blockTitle: string
-  elapsed: string
-  category: string
-  comment: string
-  createdAt: string
-  context?: AnnotationContext
-}
-
 type LoadedDocument = {
   id: string
   filename: string
   size: number
   session: ParsedSession
+}
+
+type LoadedRubric = {
+  definition: RubricDefinition
+  fingerprint: string
+  filename: string
 }
 
 const kindLabels: Record<BlockKind, string> = {
@@ -70,6 +62,18 @@ function annotationStorageKey(documentId: string) {
 
 function categoryStorageKey(documentId: string) {
   return `copilot-log-categories:${documentId}`
+}
+
+function activeRubricStorageKey(documentId: string) {
+  return `copilot-log-active-rubric:${documentId}`
+}
+
+function rubricDefinitionStorageKey(documentId: string, rubricFingerprint: string) {
+  return `copilot-log-rubric:${documentId}:${rubricFingerprint}`
+}
+
+function rubricResponseStorageKey(documentId: string, rubricFingerprint: string) {
+  return `copilot-log-rubric-responses:${documentId}:${rubricFingerprint}`
 }
 
 function filenameSafe(value: string) {
@@ -196,6 +200,65 @@ function loadCategories(documentId: string, annotations: Annotation[]) {
   )
 }
 
+function normalizeRubricResponse(value: unknown): RubricResponse | null {
+  if (!value || typeof value !== 'object') return null
+  const candidate = value as Record<string, unknown>
+  if (
+    typeof candidate.criterionId !== 'string' ||
+    typeof candidate.updatedAt !== 'string' ||
+    !Array.isArray(candidate.evidenceBlockIds) ||
+    candidate.evidenceBlockIds.some((id) => typeof id !== 'string') ||
+    (candidate.selectedOptionValue !== undefined &&
+      typeof candidate.selectedOptionValue !== 'string') ||
+    (candidate.note !== undefined && typeof candidate.note !== 'string')
+  ) {
+    return null
+  }
+  return {
+    criterionId: candidate.criterionId,
+    selectedOptionValue: candidate.selectedOptionValue,
+    note: candidate.note,
+    evidenceBlockIds: Array.from(new Set(candidate.evidenceBlockIds)),
+    updatedAt: candidate.updatedAt,
+  }
+}
+
+function loadRubricWorkspace(documentId: string): {
+  rubric: LoadedRubric | null
+  responses: RubricResponse[]
+} {
+  const activeValue = localStorage.getItem(activeRubricStorageKey(documentId))
+  if (!activeValue) return { rubric: null, responses: [] }
+  const active = JSON.parse(activeValue) as Record<string, unknown>
+  if (typeof active.fingerprint !== 'string' || typeof active.filename !== 'string') {
+    throw new Error('Saved active rubric data has an invalid format.')
+  }
+  const definitionValue = localStorage.getItem(
+    rubricDefinitionStorageKey(documentId, active.fingerprint),
+  )
+  if (!definitionValue) return { rubric: null, responses: [] }
+  const definition = parseRubric(definitionValue, 'saved-rubric.json')
+  const responseValue = localStorage.getItem(
+    rubricResponseStorageKey(documentId, active.fingerprint),
+  )
+  const parsedResponses: unknown = responseValue ? JSON.parse(responseValue) : []
+  if (!Array.isArray(parsedResponses)) {
+    throw new Error('Saved rubric responses have an invalid format.')
+  }
+  const responses = parsedResponses.map(normalizeRubricResponse)
+  if (responses.some((response) => response === null)) {
+    throw new Error('Saved rubric responses have an invalid format.')
+  }
+  return {
+    rubric: {
+      definition,
+      fingerprint: active.fingerprint,
+      filename: active.filename,
+    },
+    responses: responses.filter((response): response is RubricResponse => response !== null),
+  }
+}
+
 function Markdown({ children }: { children: string }) {
   return (
     <ReactMarkdown
@@ -243,14 +306,14 @@ function InstructionsDialog({
       <p className="eyebrow">Quick start</p>
       <h2 id="instructions-title">Annotate a Copilot session</h2>
       <p id="instructions-description">
-        Follow these steps to code a transcript and export your annotations.
+        Import one transcript, then switch between two independent annotation goals.
       </p>
       <ol>
         <li>Enter your name as the annotator.</li>
         <li>Import a Copilot session Markdown file.</li>
-        <li>Select a transcript block before adding an annotation.</li>
-        <li>Create or select a category and enter a coding note.</li>
-        <li>Save each annotation, then export your work as JSON or CSV.</li>
+        <li>For Skill Validation Check, import a rubric and answer every criterion. Notes and transcript evidence are optional and auto-save.</li>
+        <li>For Conversation Flow, select a transcript block, choose a category, and save a coding note.</li>
+        <li>Export each goal separately as JSON or CSV.</li>
       </ol>
       <p className="privacy-note">
         Your imported file and annotations stay in this browser. They are not
@@ -271,7 +334,12 @@ function App() {
   )
   const [loadedDocument, setLoadedDocument] =
     useState<LoadedDocument | null>(null)
+  const [annotationGoal, setAnnotationGoal] =
+    useState<AnnotationGoal>('conversation-flow')
   const [annotations, setAnnotations] = useState<Annotation[]>([])
+  const [loadedRubric, setLoadedRubric] = useState<LoadedRubric | null>(null)
+  const [rubricResponses, setRubricResponses] = useState<RubricResponse[]>([])
+  const [rubricError, setRubricError] = useState('')
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null)
   const [categories, setCategories] = useState([defaultCategory])
   const [selectedCategory, setSelectedCategory] = useState(defaultCategory)
@@ -328,6 +396,7 @@ function App() {
       const session = parseSession(source)
       const savedAnnotations = loadAnnotations(id)
       const savedCategories = loadCategories(id, savedAnnotations)
+      const savedRubricWorkspace = loadRubricWorkspace(id)
 
       setLoadedDocument({
         id,
@@ -336,6 +405,9 @@ function App() {
         session,
       })
       setAnnotations(savedAnnotations)
+      setLoadedRubric(savedRubricWorkspace.rubric)
+      setRubricResponses(savedRubricWorkspace.responses)
+      setRubricError('')
       setCategories(savedCategories)
       setSelectedCategory(savedCategories[0])
       setNewCategory('')
@@ -447,6 +519,69 @@ function App() {
     setAnnotations(next)
   }
 
+  async function importRubric(file: File) {
+    if (!loadedDocument) return
+    setRubricError('')
+    try {
+      const definition = parseRubric(await file.text(), file.name)
+      const normalizedDefinition = JSON.stringify(definition)
+      const rubricFingerprint = await fingerprint(normalizedDefinition)
+      const responseValue = localStorage.getItem(
+        rubricResponseStorageKey(loadedDocument.id, rubricFingerprint),
+      )
+      const parsedResponses: unknown = responseValue ? JSON.parse(responseValue) : []
+      if (!Array.isArray(parsedResponses)) {
+        throw new Error('Saved responses for this rubric have an invalid format.')
+      }
+      const responses = parsedResponses.map(normalizeRubricResponse)
+      if (responses.some((response) => response === null)) {
+        throw new Error('Saved responses for this rubric have an invalid format.')
+      }
+      localStorage.setItem(
+        rubricDefinitionStorageKey(loadedDocument.id, rubricFingerprint),
+        normalizedDefinition,
+      )
+      localStorage.setItem(
+        activeRubricStorageKey(loadedDocument.id),
+        JSON.stringify({ fingerprint: rubricFingerprint, filename: file.name }),
+      )
+      setLoadedRubric({ definition, fingerprint: rubricFingerprint, filename: file.name })
+      setRubricResponses(
+        responses.filter((response): response is RubricResponse => response !== null),
+      )
+    } catch (caught) {
+      setRubricError(
+        caught instanceof Error ? caught.message : 'The rubric could not be imported.',
+      )
+    }
+  }
+
+  function updateRubricResponse(
+    criterionId: string,
+    update: Partial<Pick<RubricResponse, 'selectedOptionValue' | 'note' | 'evidenceBlockIds'>>,
+  ) {
+    if (!loadedDocument || !loadedRubric) return
+    const existing = rubricResponses.find((response) => response.criterionId === criterionId)
+    const nextResponse: RubricResponse = {
+      criterionId,
+      selectedOptionValue: update.selectedOptionValue ?? existing?.selectedOptionValue,
+      note: update.note ?? existing?.note,
+      evidenceBlockIds: update.evidenceBlockIds ?? existing?.evidenceBlockIds ?? [],
+      updatedAt: new Date().toISOString(),
+    }
+    const next = existing
+      ? rubricResponses.map((response) =>
+          response.criterionId === criterionId ? nextResponse : response,
+        )
+      : [...rubricResponses, nextResponse]
+    localStorage.setItem(
+      rubricResponseStorageKey(loadedDocument.id, loadedRubric.fingerprint),
+      JSON.stringify(next),
+    )
+    setRubricResponses(next)
+    setRubricError('')
+  }
+
   function exportAnnotationsJson() {
     if (!loadedDocument || !annotatorName.trim()) return
 
@@ -475,7 +610,7 @@ function App() {
       annotations: exportedAnnotations,
     }
     const sourceName = loadedDocument.filename.replace(/\.md$/i, '')
-    const filename = `${filenameSafe(sourceName)}-${filenameSafe(annotatorName)}-${localDate(exportedAt)}.json`
+    const filename = `${filenameSafe(sourceName)}-${filenameSafe(annotatorName)}-conversation-flow-${localDate(exportedAt)}.json`
     downloadFile(JSON.stringify(payload, null, 2), 'application/json', filename)
   }
 
@@ -521,13 +656,134 @@ function App() {
       .join('\r\n')
     const exportedAt = new Date()
     const sourceName = loadedDocument.filename.replace(/\.md$/i, '')
-    const filename = `${filenameSafe(sourceName)}-${filenameSafe(annotatorName)}-${localDate(exportedAt)}.csv`
+    const filename = `${filenameSafe(sourceName)}-${filenameSafe(annotatorName)}-conversation-flow-${localDate(exportedAt)}.csv`
+    downloadFile(`\uFEFF${csv}\r\n`, 'text/csv;charset=utf-8', filename)
+  }
+
+  function completeRubricResponses() {
+    if (!loadedDocument || !loadedRubric) return null
+    const responseByCriterion = new Map(
+      rubricResponses.map((response) => [response.criterionId, response]),
+    )
+    const unanswered = loadedRubric.definition.criteria.filter(
+      (criterion) => !responseByCriterion.get(criterion.id)?.selectedOptionValue,
+    )
+    if (unanswered.length > 0) {
+      setAnnotationGoal('skill-validation')
+      setRubricError(
+        `Answer ${unanswered.length} remaining ${unanswered.length === 1 ? 'criterion' : 'criteria'} before exporting.`,
+      )
+      requestAnimationFrame(() => {
+        window.document
+          .getElementById(`criterion-${unanswered[0].id}`)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      })
+      return null
+    }
+
+    return loadedRubric.definition.criteria.map((criterion) => {
+      const response = responseByCriterion.get(criterion.id)!
+      const selectedOption = criterion.options.find(
+        (option) => option.value === response.selectedOptionValue,
+      )
+      if (!selectedOption) {
+        throw new Error(`Criterion "${criterion.id}" has an invalid saved answer.`)
+      }
+      const evidence = response.evidenceBlockIds
+        .map((blockId) => loadedDocument.session.blocks.find((block) => block.id === blockId))
+        .filter((block): block is SessionBlock => Boolean(block))
+        .map(toExportedEvent)
+      return { criterion, selectedOption, response, evidence }
+    })
+  }
+
+  function exportSkillValidationJson() {
+    if (!loadedDocument || !loadedRubric || !annotatorName.trim()) return
+    const completedResponses = completeRubricResponses()
+    if (!completedResponses) return
+    const exportedAt = new Date()
+    const payload = {
+      schemaVersion: 1,
+      goal: 'skill-validation',
+      document: {
+        filename: loadedDocument.filename,
+        sha256: loadedDocument.id,
+        size: loadedDocument.size,
+        sessionId: loadedDocument.session.sessionId,
+        title: loadedDocument.session.title,
+      },
+      annotator: annotatorName.trim(),
+      exportedAt: exportedAt.toISOString(),
+      rubric: {
+        fingerprint: loadedRubric.fingerprint,
+        definition: loadedRubric.definition,
+      },
+      completion: {
+        answered: completedResponses.length,
+        total: loadedRubric.definition.criteria.length,
+      },
+      responses: completedResponses,
+    }
+    const sourceName = loadedDocument.filename.replace(/\.md$/i, '')
+    const filename = `${filenameSafe(sourceName)}-${filenameSafe(annotatorName)}-skill-validation-${localDate(exportedAt)}.json`
+    downloadFile(JSON.stringify(payload, null, 2), 'application/json', filename)
+  }
+
+  function exportSkillValidationCsv() {
+    if (!loadedDocument || !loadedRubric || !annotatorName.trim()) return
+    const completedResponses = completeRubricResponses()
+    if (!completedResponses) return
+    const columns = [
+      'source_file',
+      'document_sha256',
+      'annotator',
+      'rubric_id',
+      'rubric_title',
+      'rubric_fingerprint',
+      'criterion_id',
+      'criterion_prompt',
+      'criterion_description',
+      'selected_option_value',
+      'selected_option_label',
+      'note',
+      'updated_at',
+      'evidence_block_ids',
+      'evidence_blocks',
+    ]
+    const rows = completedResponses.map(
+      ({ criterion, selectedOption, response, evidence }) => [
+        loadedDocument.filename,
+        loadedDocument.id,
+        annotatorName.trim(),
+        loadedRubric.definition.id,
+        loadedRubric.definition.title,
+        loadedRubric.fingerprint,
+        criterion.id,
+        criterion.prompt,
+        criterion.description ?? '',
+        selectedOption.value,
+        selectedOption.label,
+        response.note ?? '',
+        response.updatedAt,
+        JSON.stringify(response.evidenceBlockIds),
+        JSON.stringify(evidence),
+      ],
+    )
+    const csv = [columns, ...rows]
+      .map((row) => row.map(csvValue).join(','))
+      .join('\r\n')
+    const exportedAt = new Date()
+    const sourceName = loadedDocument.filename.replace(/\.md$/i, '')
+    const filename = `${filenameSafe(sourceName)}-${filenameSafe(annotatorName)}-skill-validation-${localDate(exportedAt)}.csv`
     downloadFile(`\uFEFF${csv}\r\n`, 'text/csv;charset=utf-8', filename)
   }
 
   function clearDocument() {
     setLoadedDocument(null)
     setAnnotations([])
+    setLoadedRubric(null)
+    setRubricResponses([])
+    setRubricError('')
     setSelectedBlockId(null)
     setCategories([defaultCategory])
     setSelectedCategory(defaultCategory)
@@ -652,35 +908,77 @@ function App() {
           >
             Open another
           </button>
-          <button
-            className="export-csv-button"
-            type="button"
-            onClick={exportAnnotationsCsv}
-            disabled={!annotatorName.trim()}
-            title={
-              annotatorName.trim()
-                ? 'Export annotations as CSV'
-                : 'Enter an annotator name before exporting'
-            }
-          >
-            Export CSV
-          </button>
-          <button
-            type="button"
-            onClick={exportAnnotationsJson}
-            disabled={!annotatorName.trim()}
-            title={
-              annotatorName.trim()
-                ? 'Export annotations as JSON'
-                : 'Enter an annotator name before exporting'
-            }
-          >
-            Export JSON
-          </button>
+          <details className="export-menu">
+            <summary>Export</summary>
+            <div>
+              <strong>Skill Validation</strong>
+              <button
+                type="button"
+                onClick={exportSkillValidationJson}
+                disabled={!annotatorName.trim() || !loadedRubric}
+                title={!annotatorName.trim() ? 'Enter an annotator name before exporting' : !loadedRubric ? 'Import a rubric before exporting' : 'Export Skill Validation as JSON'}
+              >
+                JSON
+              </button>
+              <button
+                type="button"
+                onClick={exportSkillValidationCsv}
+                disabled={!annotatorName.trim() || !loadedRubric}
+                title={!annotatorName.trim() ? 'Enter an annotator name before exporting' : !loadedRubric ? 'Import a rubric before exporting' : 'Export Skill Validation as CSV'}
+              >
+                CSV
+              </button>
+              <strong>Conversation Flow</strong>
+              <button
+                type="button"
+                onClick={exportAnnotationsJson}
+                disabled={!annotatorName.trim()}
+                title={annotatorName.trim() ? 'Export Conversation Flow as JSON' : 'Enter an annotator name before exporting'}
+              >
+                JSON
+              </button>
+              <button
+                type="button"
+                onClick={exportAnnotationsCsv}
+                disabled={!annotatorName.trim()}
+                title={annotatorName.trim() ? 'Export Conversation Flow as CSV' : 'Enter an annotator name before exporting'}
+              >
+                CSV
+              </button>
+            </div>
+          </details>
         </div>
       </header>
 
-      <div className="workspace">
+      <div className="goal-bar">
+        <span>Annotation goal</span>
+        <div className="goal-selector" role="group" aria-label="Annotation goal">
+          <button
+            type="button"
+            className={annotationGoal === 'skill-validation' ? 'active' : ''}
+            aria-pressed={annotationGoal === 'skill-validation'}
+            onClick={() => {
+              setAnnotationGoal('skill-validation')
+              setError('')
+            }}
+          >
+            Skill Validation Check
+          </button>
+          <button
+            type="button"
+            className={annotationGoal === 'conversation-flow' ? 'active' : ''}
+            aria-pressed={annotationGoal === 'conversation-flow'}
+            onClick={() => {
+              setAnnotationGoal('conversation-flow')
+              setRubricError('')
+            }}
+          >
+            Conversation Flow
+          </button>
+        </div>
+      </div>
+
+      <div className={`workspace ${annotationGoal === 'skill-validation' ? 'skill-workspace' : ''}`}>
         <aside className="outline-panel">
           <div className="outline-heading">
             <p className="eyebrow">Session outline</p>
@@ -851,6 +1149,17 @@ function App() {
           </div>
         </main>
 
+        {annotationGoal === 'skill-validation' ? (
+          <SkillValidationPanel
+            rubric={loadedRubric?.definition ?? null}
+            rubricFilename={loadedRubric?.filename ?? ''}
+            responses={rubricResponses}
+            blocks={loadedDocument.session.blocks}
+            error={rubricError}
+            onImport={(file) => void importRubric(file)}
+            onUpdateResponse={updateRubricResponse}
+          />
+        ) : (
         <aside className="annotation-panel">
           <div className="annotation-heading">
             <p className="eyebrow">Annotation</p>
@@ -950,6 +1259,7 @@ function App() {
             </div>
           )}
         </aside>
+        )}
       </div>
     </div>
   )
