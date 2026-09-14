@@ -1436,6 +1436,72 @@ dialog:focus-visible {
   font-size: 12px;
 }
 
+.selected-span-preview,
+.annotation-note q,
+.block-review-note q {
+  display: block;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent);
+  background: #f4f0e4;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.selected-span-preview strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.code-assignment {
+  margin-bottom: 12px;
+  padding: 10px 0;
+  border-block: 1px solid var(--line);
+}
+
+.code-assignment-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.code-assignment-heading strong {
+  color: var(--ink);
+}
+
+.code-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.code-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #fffdf8;
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.code-option:has(input:checked) {
+  border-color: var(--accent);
+  background: #f4f0e4;
+}
+
 @media (max-width: 1050px) {
   .annotator-field span,
   .save-status {

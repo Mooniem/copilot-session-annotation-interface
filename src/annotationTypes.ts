@@ -13,14 +13,23 @@ export type AnnotationContext = {
   copilotGeneratedText: string | null
 }
 
+export type TextSpan = {
+  blockId: string
+  start: number
+  end: number
+  text: string
+}
+
 export type ConversationFlowAnnotation = {
   id: string
   blockId: string
   blockTitle: string
   elapsed: string
   category: string
+  codes?: string[]
   comment: string
   createdAt: string
+  span?: TextSpan
   context?: AnnotationContext
 }
 
@@ -49,5 +58,6 @@ export type RubricResponse = {
   selectedOptionValue?: string
   note?: string
   evidenceBlockIds: string[]
+  evidenceSpans?: TextSpan[]
   updatedAt: string
 }

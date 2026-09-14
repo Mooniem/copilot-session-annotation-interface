@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { RubricDefinition, RubricResponse } from './annotationTypes'
+import type { RubricDefinition, RubricResponse, TextSpan } from './annotationTypes'
 import type { SessionBlock } from './parseSession'
 
 type Props = {
@@ -7,18 +7,20 @@ type Props = {
   rubricFilename: string
   responses: RubricResponse[]
   blocks: SessionBlock[]
+  selectedSpan: TextSpan | null
   error: string
   onImport: (file: File) => void
   onUpdateResponse: (
     criterionId: string,
-    update: Partial<Pick<RubricResponse, 'selectedOptionValue' | 'note' | 'evidenceBlockIds'>>,
+    update: Partial<Pick<RubricResponse, 'selectedOptionValue' | 'note' | 'evidenceBlockIds' | 'evidenceSpans'>>,
   ) => void
 }
 
 type EvidenceDialogProps = {
   blocks: SessionBlock[]
   selectedBlockIds: string[]
-  onConfirm: (blockIds: string[]) => void
+  selectedSpan: TextSpan | null
+  onConfirm: (blockIds: string[], span: TextSpan | null) => void
   onClose: () => void
 }
 
@@ -36,6 +38,7 @@ function preview(markdown: string) {
 function EvidenceDialog({
   blocks,
   selectedBlockIds,
+  selectedSpan,
   onConfirm,
   onClose,
 }: EvidenceDialogProps) {
@@ -127,7 +130,13 @@ function EvidenceDialog({
       <div className="evidence-actions">
         <span>{draftIds.length} selected</span>
         <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
-        <button type="button" onClick={() => onConfirm(draftIds)}>Use evidence</button>
+        <button
+          type="button"
+          onClick={() => onConfirm(draftIds, selectedSpan)}
+          title={selectedSpan ? `Attach selected text: ${selectedSpan.text}` : undefined}
+        >
+          {selectedSpan ? 'Use blocks and selected text' : 'Use evidence'}
+        </button>
       </div>
     </dialog>
   )
@@ -138,6 +147,7 @@ export function SkillValidationPanel({
   rubricFilename,
   responses,
   blocks,
+  selectedSpan,
   error,
   onImport,
   onUpdateResponse,
@@ -160,10 +170,17 @@ export function SkillValidationPanel({
       {evidenceCriterionId && (
         <EvidenceDialog
           blocks={blocks}
+          selectedSpan={selectedSpan}
           selectedBlockIds={evidenceResponse?.evidenceBlockIds ?? []}
           onClose={() => setEvidenceCriterionId(null)}
-          onConfirm={(blockIds) => {
-            onUpdateResponse(evidenceCriterionId, { evidenceBlockIds: blockIds })
+          onConfirm={(blockIds, span) => {
+            const existingSpans = evidenceResponse?.evidenceSpans ?? []
+            const evidenceSpans = span && !existingSpans.some(
+              (item) => item.blockId === span.blockId && item.start === span.start && item.end === span.end,
+            )
+              ? [...existingSpans, span]
+              : existingSpans
+            onUpdateResponse(evidenceCriterionId, { evidenceBlockIds: blockIds, evidenceSpans })
             setEvidenceCriterionId(null)
           }}
         />

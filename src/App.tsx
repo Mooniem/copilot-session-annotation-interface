@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { DragEvent, MouseEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
@@ -13,9 +13,11 @@ import type {
   ExportedEvent,
   RubricDefinition,
   RubricResponse,
+  TextSpan,
 } from './annotationTypes'
 import { parseRubric } from './parseRubric'
 import { parseSession } from './parseSession'
+import { createTextSpan, isValidTextSpan } from './textSpans'
 import type {
   BlockKind,
   ParsedSession,
@@ -97,8 +99,8 @@ function formatDuration(totalSeconds: number) {
   return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`
 }
 
-function csvValue(value: string) {
-  return `"${value.replaceAll('"', '""')}"`
+function csvValue(value: string | number) {
+  return `"${String(value).replaceAll('"', '""')}"`
 }
 
 function downloadFile(content: string, type: string, filename: string) {
@@ -155,6 +157,31 @@ function normalizeAnnotation(value: unknown): Annotation | null {
 
   const category = candidate.category.trim()
   if (!category) return null
+  const codes = candidate.codes
+  if (
+    codes !== undefined &&
+    (!Array.isArray(codes) || codes.some((code) => typeof code !== 'string' || !code.trim()))
+  ) {
+    return null
+  }
+
+  if (candidate.span !== undefined) {
+    const span = candidate.span
+    if (!span || typeof span !== 'object' || Array.isArray(span)) return null
+    const spanValue = span as Record<string, unknown>
+    if (
+      spanValue.blockId !== candidate.blockId ||
+      typeof spanValue.start !== 'number' ||
+      typeof spanValue.end !== 'number' ||
+      typeof spanValue.text !== 'string' ||
+      !Number.isInteger(spanValue.start) ||
+      !Number.isInteger(spanValue.end) ||
+      spanValue.start < 0 ||
+      spanValue.end <= spanValue.start
+    ) {
+      return null
+    }
+  }
 
   return {
     id: candidate.id,
@@ -162,12 +189,14 @@ function normalizeAnnotation(value: unknown): Annotation | null {
     blockTitle: candidate.blockTitle,
     elapsed: candidate.elapsed,
     category,
+    codes: codes ? Array.from(new Set(codes.map((code) => code.trim()))) : undefined,
     comment: candidate.comment,
     createdAt: candidate.createdAt,
+    span: candidate.span as TextSpan | undefined,
   }
 }
 
-function loadAnnotations(documentId: string): Annotation[] {
+function loadAnnotations(documentId: string, blocks: SessionBlock[]): Annotation[] {
   const saved = localStorage.getItem(annotationStorageKey(documentId))
   if (!saved) return []
 
@@ -175,7 +204,14 @@ function loadAnnotations(documentId: string): Annotation[] {
   if (!Array.isArray(parsed)) {
     throw new Error('Saved annotation data has an invalid format.')
   }
-  const normalized = parsed.map(normalizeAnnotation)
+  const normalized = parsed.map((value) => {
+    const annotation = normalizeAnnotation(value)
+    if (!annotation || !annotation.span) return annotation
+    const block = blocks.find((item) => item.id === annotation.blockId)
+    return block && isValidTextSpan(annotation.span, block.id, block.markdown)
+      ? annotation
+      : null
+  })
   if (normalized.some((annotation) => annotation === null)) {
     throw new Error('Saved annotation data has an invalid format.')
   }
@@ -196,6 +232,7 @@ function loadCategories(documentId: string, annotations: Annotation[]) {
       defaultCategory,
       ...parsed.map((item) => item.trim()).filter(Boolean),
       ...annotations.map((annotation) => annotation.category),
+      ...annotations.flatMap((annotation) => annotation.codes ?? []),
     ]),
   )
 }
@@ -203,6 +240,14 @@ function loadCategories(documentId: string, annotations: Annotation[]) {
 function normalizeRubricResponse(value: unknown): RubricResponse | null {
   if (!value || typeof value !== 'object') return null
   const candidate = value as Record<string, unknown>
+  const evidenceSpans = candidate.evidenceSpans
+  if (
+    evidenceSpans !== undefined &&
+    (!Array.isArray(evidenceSpans) ||
+      evidenceSpans.some((span) => !span || typeof span !== 'object'))
+  ) {
+    return null
+  }
   if (
     typeof candidate.criterionId !== 'string' ||
     typeof candidate.updatedAt !== 'string' ||
@@ -219,6 +264,7 @@ function normalizeRubricResponse(value: unknown): RubricResponse | null {
     selectedOptionValue: candidate.selectedOptionValue,
     note: candidate.note,
     evidenceBlockIds: Array.from(new Set(candidate.evidenceBlockIds)),
+    evidenceSpans: evidenceSpans as TextSpan[] | undefined,
     updatedAt: candidate.updatedAt,
   }
 }
@@ -259,7 +305,7 @@ function loadRubricWorkspace(documentId: string): {
   }
 }
 
-function Markdown({ children }: { children: string }) {
+const Markdown = memo(function Markdown({ children }: { children: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -268,7 +314,7 @@ function Markdown({ children }: { children: string }) {
       {children}
     </ReactMarkdown>
   )
-}
+})
 
 function InstructionsDialog({
   open,
@@ -312,7 +358,7 @@ function InstructionsDialog({
         <li>Enter your name as the annotator.</li>
         <li>Import a Copilot session Markdown file.</li>
         <li>For Skill Validation Check, import a rubric and answer every criterion. Notes and transcript evidence are optional and auto-save.</li>
-        <li>For Conversation Flow, select a transcript block, choose a category, and save a coding note.</li>
+        <li>For Conversation Flow, select a block or text span, assign one or more codes, and save a coding note.</li>
         <li>Export each goal separately as JSON or CSV.</li>
       </ol>
       <p className="privacy-note">
@@ -341,9 +387,12 @@ function App() {
   const [rubricResponses, setRubricResponses] = useState<RubricResponse[]>([])
   const [rubricError, setRubricError] = useState('')
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null)
+  const [selectedSpan, setSelectedSpan] = useState<TextSpan | null>(null)
   const [categories, setCategories] = useState([defaultCategory])
-  const [selectedCategory, setSelectedCategory] = useState(defaultCategory)
+  const [selectedCodes, setSelectedCodes] = useState([defaultCategory])
   const [newCategory, setNewCategory] = useState('')
+  const [editingCode, setEditingCode] = useState<string | null>(null)
+  const [editedCode, setEditedCode] = useState('')
   const [comment, setComment] = useState('')
   const [editingAnnotationId, setEditingAnnotationId] = useState<string | null>(null)
   const [editCategory, setEditCategory] = useState(defaultCategory)
@@ -398,7 +447,7 @@ function App() {
       const source = await file.text()
       const id = await fingerprint(source)
       const session = parseSession(source)
-      const savedAnnotations = loadAnnotations(id)
+      const savedAnnotations = loadAnnotations(id, session.blocks)
       const savedCategories = loadCategories(id, savedAnnotations)
       const savedRubricWorkspace = loadRubricWorkspace(id)
 
@@ -413,7 +462,7 @@ function App() {
       setRubricResponses(savedRubricWorkspace.responses)
       setRubricError('')
       setCategories(savedCategories)
-      setSelectedCategory(savedCategories[0])
+      setSelectedCodes([savedCategories[0]])
       setNewCategory('')
       setSelectedBlockId(null)
       setEditingAnnotationId(null)
@@ -437,10 +486,33 @@ function App() {
 
   function selectBlock(block: SessionBlock) {
     setSelectedBlockId(block.id)
+    setSelectedSpan((current) => current?.blockId === block.id ? current : null)
     setComment('')
     setError('')
     setEditingAnnotationId(null)
     setEditError('')
+  }
+
+  function captureTextSelection(
+    block: SessionBlock,
+    event: MouseEvent<HTMLElement>,
+  ) {
+    if (!(event.target instanceof HTMLElement) || !event.target.closest('.markdown-body')) {
+      return
+    }
+    const selection = window.getSelection()
+    const selectedText = selection?.toString() ?? ''
+    if (!selectedText.trim()) return
+
+    const span = createTextSpan(block.id, block.markdown, selectedText)
+    setSelectedBlockId(block.id)
+    setSelectedSpan(span)
+    setError(
+      span
+        ? ''
+        : 'This selection could not be anchored uniquely in the source Markdown.',
+    )
+    event.stopPropagation()
   }
 
   function openInstructions(event: MouseEvent<HTMLButtonElement>) {
@@ -463,7 +535,6 @@ function App() {
       (item) => item.toLowerCase() === category.toLowerCase(),
     )
     if (existingCategory) {
-      setSelectedCategory(existingCategory)
       setNewCategory('')
       return
     }
@@ -474,8 +545,81 @@ function App() {
       JSON.stringify(nextCategories),
     )
     setCategories(nextCategories)
-    setSelectedCategory(category)
+    setSelectedCodes((current) => current.includes(category) ? current : [...current, category])
     setNewCategory('')
+  }
+
+  function toggleCode(code: string) {
+    setSelectedCodes((current) => {
+      if (current.includes(code)) {
+        const next = current.filter((item) => item !== code)
+        return next.length > 0 ? next : current
+      }
+      return [...current, code]
+    })
+  }
+
+  function startEditingCode(code: string) {
+    setEditingCode(code)
+    setEditedCode(code)
+  }
+
+  function renameCode() {
+    if (!loadedDocument || !editingCode) return
+    const nextCode = editedCode.trim()
+    if (!nextCode) return
+    if (
+      categories.some(
+        (code) => code !== editingCode && code.toLowerCase() === nextCode.toLowerCase(),
+      )
+    ) {
+      setError('A code with that name already exists.')
+      return
+    }
+
+    const nextCategories = categories.map((code) => code === editingCode ? nextCode : code)
+    const nextAnnotations = annotations.map((annotation) => ({
+      ...annotation,
+      category: annotation.category === editingCode ? nextCode : annotation.category,
+      codes: annotation.codes?.map((code) => code === editingCode ? nextCode : code),
+    }))
+    localStorage.setItem(categoryStorageKey(loadedDocument.id), JSON.stringify(nextCategories))
+    localStorage.setItem(annotationStorageKey(loadedDocument.id), JSON.stringify(nextAnnotations))
+    setCategories(nextCategories)
+    setAnnotations(nextAnnotations)
+    setSelectedCodes((current) => current.map((code) => code === editingCode ? nextCode : code))
+    setEditingCode(null)
+    setEditedCode('')
+    setError('')
+  }
+
+  function deleteCode(code: string) {
+    if (!loadedDocument || categories.length === 1) {
+      setError('Keep at least one code available.')
+      return
+    }
+    const nextCategories = categories.filter((item) => item !== code)
+    const nextAnnotations = annotations.map((annotation) => {
+      const nextCodes = annotation.codes?.filter((item) => item !== code)
+      return {
+        ...annotation,
+        category: annotation.category === code ? nextCodes?.[0] ?? nextCategories[0] : annotation.category,
+        codes: nextCodes?.length ? nextCodes : undefined,
+      }
+    })
+    localStorage.setItem(categoryStorageKey(loadedDocument.id), JSON.stringify(nextCategories))
+    localStorage.setItem(annotationStorageKey(loadedDocument.id), JSON.stringify(nextAnnotations))
+    setCategories(nextCategories)
+    setAnnotations(nextAnnotations)
+    setSelectedCodes((current) => {
+      const next = current.filter((item) => item !== code)
+      return next.length ? next : [nextCategories[0]]
+    })
+    if (editingCode === code) {
+      setEditingCode(null)
+      setEditedCode('')
+    }
+    setError('')
   }
 
   function saveAnnotation() {
@@ -488,6 +632,10 @@ function App() {
       setError('Add a comment before saving the annotation.')
       return
     }
+    if (selectedCodes.length === 0) {
+      setError('Assign at least one code before saving the annotation.')
+      return
+    }
 
     const next: Annotation[] = [
       ...annotations,
@@ -496,9 +644,11 @@ function App() {
         blockId: selectedBlock.id,
         blockTitle: selectedBlock.title,
         elapsed: selectedBlock.elapsed,
-        category: selectedCategory,
+        category: selectedCodes[0],
+        codes: selectedCodes,
         comment: comment.trim(),
         createdAt: new Date().toISOString(),
+        span: selectedSpan ?? undefined,
         context:
           getAnnotationContext(
             loadedDocument.session.blocks,
@@ -512,6 +662,7 @@ function App() {
     )
     setAnnotations(next)
     setComment('')
+    setSelectedSpan(null)
     setError('')
   }
 
@@ -614,7 +765,7 @@ function App() {
 
   function updateRubricResponse(
     criterionId: string,
-    update: Partial<Pick<RubricResponse, 'selectedOptionValue' | 'note' | 'evidenceBlockIds'>>,
+    update: Partial<Pick<RubricResponse, 'selectedOptionValue' | 'note' | 'evidenceBlockIds' | 'evidenceSpans'>>,
   ) {
     if (!loadedDocument || !loadedRubric) return
     const existing = rubricResponses.find((response) => response.criterionId === criterionId)
@@ -623,6 +774,7 @@ function App() {
       selectedOptionValue: update.selectedOptionValue ?? existing?.selectedOptionValue,
       note: update.note ?? existing?.note,
       evidenceBlockIds: update.evidenceBlockIds ?? existing?.evidenceBlockIds ?? [],
+      evidenceSpans: update.evidenceSpans ?? existing?.evidenceSpans,
       updatedAt: new Date().toISOString(),
     }
     const next = existing
@@ -651,8 +803,14 @@ function App() {
           annotation.blockId,
         ),
     }))
+    const conversation = loadedDocument.session.blocks.map((block) => ({
+      ...toExportedEvent(block),
+      annotations: exportedAnnotations.filter(
+        (annotation) => annotation.blockId === block.id,
+      ),
+    }))
     const payload = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       document: {
         filename: loadedDocument.filename,
         sha256: loadedDocument.id,
@@ -663,6 +821,7 @@ function App() {
       annotator: annotatorName.trim(),
       exportedAt: exportedAt.toISOString(),
       categories,
+      conversation,
       annotations: exportedAnnotations,
     }
     const sourceName = loadedDocument.filename.replace(/\.md$/i, '')
@@ -686,26 +845,38 @@ function App() {
       'created_at',
       'annotated_text',
       'copilot_generated_text',
+      'span_start',
+      'span_end',
+      'selected_text',
     ]
-    const rows = annotations.map((annotation) => {
-      const context = getAnnotationContext(
-        loadedDocument.session.blocks,
-        annotation.blockId,
+    const rows = loadedDocument.session.blocks.flatMap((block) => {
+      const blockAnnotations = annotations.filter(
+        (annotation) => annotation.blockId === block.id,
       )
-      return [
-        loadedDocument.filename,
-        annotatorName.trim(),
-        annotation.id,
-        annotation.blockId,
-        annotation.blockTitle,
-        context?.annotatedEvent.kind ?? '',
-        annotation.elapsed,
-        annotation.category,
-        annotation.comment,
-        annotation.createdAt,
-        context?.annotatedEvent.markdown ?? '',
-        context?.copilotGeneratedText ?? '',
-      ]
+      const annotationsForRows = blockAnnotations.length > 0 ? blockAnnotations : [null]
+      return annotationsForRows.map((annotation) => {
+        const context = getAnnotationContext(
+          loadedDocument.session.blocks,
+          block.id,
+        )
+        return [
+          loadedDocument.filename,
+          annotatorName.trim(),
+          annotation?.id ?? '',
+          block.id,
+          block.title,
+          context?.annotatedEvent.kind ?? '',
+          block.elapsed,
+          annotation?.category ?? '',
+          annotation?.comment ?? '',
+          annotation?.createdAt ?? '',
+          context?.annotatedEvent.markdown ?? '',
+          context?.copilotGeneratedText ?? '',
+          annotation?.span?.start ?? '',
+          annotation?.span?.end ?? '',
+          annotation?.span?.text ?? '',
+        ]
+      })
     })
     const csv = [columns, ...rows]
       .map((row) => row.map(csvValue).join(','))
@@ -844,7 +1015,7 @@ function App() {
     setEditError('')
     setSelectedBlockId(null)
     setCategories([defaultCategory])
-    setSelectedCategory(defaultCategory)
+    setSelectedCodes([defaultCategory])
     setNewCategory('')
     setError('')
   }
@@ -1192,6 +1363,7 @@ function App() {
                   className={`event-card ${block.kind} ${isSelected ? 'selected' : ''}`}
                   aria-current={isSelected ? 'true' : undefined}
                   onClick={() => selectBlock(block)}
+                  onMouseUp={(event) => captureTextSelection(block, event)}
                 >
                   <header>
                     <div>
@@ -1292,6 +1464,7 @@ function App() {
                                       </button>
                                     </div>
                                   </div>
+                                  {annotation.span && <q>{annotation.span.text}</q>}
                                   <p>{annotation.comment}</p>
                                 </>
                               )}
@@ -1337,6 +1510,7 @@ function App() {
             rubricFilename={loadedRubric?.filename ?? ''}
             responses={rubricResponses}
             blocks={loadedDocument.session.blocks}
+            selectedSpan={selectedSpan}
             error={rubricError}
             onImport={(file) => void importRubric(file)}
             onUpdateResponse={updateRubricResponse}
@@ -1351,41 +1525,69 @@ function App() {
 
           {selectedBlock ? (
             <>
-              <label className="category-label" htmlFor="annotation-category">
-                Category
-              </label>
-              <select
-                id="annotation-category"
-                value={selectedCategory}
-                onChange={(event) => setSelectedCategory(event.target.value)}
-              >
-                {categories.map((category) => (
-                  <option key={category} value={category}>
-                    {category}
-                  </option>
-                ))}
-              </select>
-              <form
-                className="category-creator"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  addCategory()
-                }}
-              >
-                <input
-                  type="text"
-                  value={newCategory}
-                  placeholder="New category"
-                  aria-label="New category"
-                  onChange={(event) => setNewCategory(event.target.value)}
-                />
-                <button type="submit" disabled={!newCategory.trim()}>
-                  Add
-                </button>
-              </form>
               <label className="comment-label" htmlFor="annotation-comment">
                 Coding note
               </label>
+              <div className="code-assignment" aria-label="Assign codes">
+                <div className="code-assignment-heading">
+                  <strong>Codes</strong>
+                  <span>{selectedCodes.length} assigned</span>
+                </div>
+                <div className="code-list">
+                  {categories.map((code) => (
+                    <div key={code} className="code-option">
+                      {editingCode === code ? (
+                        <>
+                          <input
+                            value={editedCode}
+                            aria-label={`Rename ${code}`}
+                            onChange={(event) => setEditedCode(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') renameCode()
+                              if (event.key === 'Escape') setEditingCode(null)
+                            }}
+                          />
+                          <button type="button" className="text-button" onClick={renameCode}>Save</button>
+                          <button type="button" className="delete-button" onClick={() => setEditingCode(null)}>Cancel</button>
+                        </>
+                      ) : (
+                        <>
+                          <input
+                            type="checkbox"
+                            checked={selectedCodes.includes(code)}
+                            onChange={() => toggleCode(code)}
+                          />
+                          <span>{code}</span>
+                          <button type="button" className="text-button" onClick={() => startEditingCode(code)}>Edit</button>
+                          <button type="button" className="delete-button" onClick={() => deleteCode(code)}>Delete</button>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <form
+                  className="category-creator"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    addCategory()
+                  }}
+                >
+                  <input
+                    type="text"
+                    value={newCategory}
+                    placeholder="Create a new code"
+                    aria-label="Create a new code"
+                    onChange={(event) => setNewCategory(event.target.value)}
+                  />
+                  <button type="submit" disabled={!newCategory.trim()}>
+                    Add code
+                  </button>
+                </form>
+              </div>
+              <div className="selected-span-preview" role="status">
+                <strong>{selectedSpan ? 'Selected text' : 'No text selected'}</strong>
+                {selectedSpan && <q>{selectedSpan.text}</q>}
+              </div>
               <textarea
                 id="annotation-comment"
                 rows={6}
@@ -1414,9 +1616,9 @@ function App() {
                   .map((annotation) => (
                     <div className="annotation-note" key={annotation.id}>
                       <div>
-                        <span className="category-badge">
-                          {annotation.category}
-                        </span>
+                        {(annotation.codes ?? [annotation.category]).map((code) => (
+                          <span className="category-badge" key={code}>{code}</span>
+                        ))}
                         <button
                           type="button"
                           className="delete-button"
@@ -1426,6 +1628,7 @@ function App() {
                           Delete
                         </button>
                       </div>
+                      {annotation.span && <q>{annotation.span.text}</q>}
                       <p>{annotation.comment}</p>
                     </div>
                   ))}
